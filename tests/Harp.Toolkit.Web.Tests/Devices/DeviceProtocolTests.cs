@@ -1,10 +1,9 @@
 using System.Text;
 using Bonsai.Harp;
 using Harp.Toolkit.Firmware;
-using Harp.Toolkit.Firmware.ATxmega;
 using Harp.Toolkit.Web.Devices;
-using DeviceFirmware = Harp.Toolkit.Firmware.ATxmega.DeviceFirmware;
-using FirmwareMetadata = Harp.Toolkit.Firmware.ATxmega.FirmwareMetadata;
+using AtxmegaImage = Harp.Toolkit.Firmware.ATxmega.FirmwareImage;
+using FirmwareMetadata = Harp.Toolkit.Firmware.FirmwareMetadata;
 
 namespace Harp.Toolkit.Web.Tests.Devices;
 
@@ -143,7 +142,7 @@ public sealed class DeviceProtocolTests
 
         Assert.IsTrue(device.Exited);
         Assert.AreEqual(3, device.PagesWritten);
-        CollectionAssert.AreEqual(firmware.Data, device.Flash.Take(firmware.Data.Length).ToArray());
+        CollectionAssert.AreEqual(firmware.Image.Data, device.Flash.Take(firmware.Image.Data.Length).ToArray());
         CollectionAssert.AreEqual(new[] { PortMode.Protocol, PortMode.Bootloader }, device.Opens);
         Assert.AreEqual(UpdateStage.Restart, stages[^1]);
     }
@@ -178,12 +177,14 @@ public sealed class DeviceProtocolTests
     {
         var hex = ToIntelHex(Enumerable.Range(0, 100).Select(i => (byte)i).ToArray());
 
-        var firmware = AtxmegaBootloader.ReadFirmware("Behavior-fw1.2-harp1.13-hw2.0-ass0.hex", new MemoryStream(Encoding.ASCII.GetBytes(hex)));
+        var file = FirmwareFile.Read("Behavior-fw1.2-harp1.13-hw2.0-ass0.hex", new MemoryStream(Encoding.ASCII.GetBytes(hex)));
 
-        Assert.AreEqual("Behavior", firmware.Metadata.DeviceName);
+        var firmware = Assert.IsInstanceOfType<AtxmegaFirmwareFile>(file);
+        Assert.AreEqual(FirmwareCore.ATxmega, firmware.Core);
+        Assert.AreEqual("Behavior", firmware.Metadata!.DeviceName);
         Assert.AreEqual(new HarpVersion(1, 2), firmware.Metadata.FirmwareVersion);
-        Assert.HasCount(AtxmegaBootloader.ImagePageSize, firmware.Data);
-        Assert.AreEqual((byte)99, firmware.Data[99]);
+        Assert.HasCount(AtxmegaBootloader.ImagePageSize, firmware.Image.Data);
+        Assert.AreEqual((byte)99, firmware.Image.Data[99]);
     }
 
     [TestMethod]
@@ -196,14 +197,15 @@ public sealed class DeviceProtocolTests
         Assert.ThrowsExactly<FormatException>(() => PayloadFormat.CreateWrite(40, PayloadType.U8, "300"));
     }
 
-    static DeviceFirmware CreateFirmware(string name, int pages)
+    static AtxmegaFirmwareFile CreateFirmware(string name, int pages)
     {
         var data = Enumerable.Range(0, pages * AtxmegaBootloader.ImagePageSize).Select(i => (byte)(i * 7)).ToArray();
         var hex = ToIntelHex(data);
-        return DeviceFirmware.FromStream(FirmwareMetadata.Parse(name), new MemoryStream(Encoding.ASCII.GetBytes(hex)), AtxmegaBootloader.ImagePageSize);
+        var image = AtxmegaImage.FromStream(new MemoryStream(Encoding.ASCII.GetBytes(hex)), AtxmegaBootloader.ImagePageSize);
+        return new AtxmegaFirmwareFile(name + ".hex", FirmwareMetadata.Parse(name), image);
     }
 
-    static string ToIntelHex(byte[] data)
+    internal static string ToIntelHex(byte[] data)
     {
         var text = new StringBuilder();
         for (int address = 0; address < data.Length; address += 16)
@@ -221,7 +223,7 @@ public sealed class DeviceProtocolTests
         return text.Append(":00000001FF\n").ToString();
     }
 
-    sealed class ImmediateProgress(List<UpdateStage> stages) : IProgress<UpdateProgress>
+    internal sealed class ImmediateProgress(List<UpdateStage> stages) : IProgress<UpdateProgress>
     {
         public void Report(UpdateProgress value) => stages.Add(value.Stage);
     }

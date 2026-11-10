@@ -2,8 +2,9 @@
 @using System.Runtime.Versioning
 @using Bonsai.Harp
 @using Harp.Toolkit.Firmware
+@using Harp.Toolkit.Firmware.Pico
+@using Harp.WebUsb
 @using Microsoft.AspNetCore.Components.Forms
-@using DeviceFirmware = Harp.Toolkit.Firmware.ATxmega.DeviceFirmware
 @attribute [SupportedOSPlatform("browser")]
 @implements IDisposable
 @inject DeviceSession Session
@@ -20,7 +21,7 @@
         <div class="workflow">
             <header class="workflow-header">
                 <h1>Update firmware</h1>
-                <p>Installs a firmware release on an ATxmega Harp device over USB. The device restarts into its bootloader during the update.</p>
+                <p>Installs a firmware release on a Harp device over USB: a <code>.hex</code> file on an ATxmega device, or a <code>.uf2</code> file on a Pico (RP2040 or RP2350) device. The device restarts into its bootloader during the update.</p>
             </header>
 
             <ol class="steps">
@@ -48,6 +49,13 @@
                         else if (CurrentStep == 4 && updatedDevice is not null)
                         {
                             <p class="step-summary">@updatedDevice</p>
+                        }
+                        else if (bootselMode)
+                        {
+                            <p class="step-summary">
+                                <strong>Device in BOOTSEL mode</strong> · picked over USB when the update starts
+                                <button class="link-button" @onclick="() => bootselMode = false">Connect over serial instead</button>
+                            </p>
                         }
                         else if (recovery && Session.Port is not null)
                         {
@@ -81,6 +89,13 @@
                                     <button class="link-button" @onclick="() => recovery = true">Update it anyway</button>
                                 </p>
                             }
+                            @if (Session.IsUsbSupported)
+                            {
+                                <p class="hint">
+                                    Pico device in BOOTSEL mode, showing up as a USB drive with no serial port?
+                                    <button class="link-button" @onclick="EnterBootselMode">Update a device in BOOTSEL mode</button>
+                                </p>
+                            }
                         }
                     </div>
                 </li>
@@ -99,21 +114,48 @@
                         @if (firmware is not null && CurrentStep > 2)
                         {
                             <p class="step-summary">
-                                <strong>@firmware.Metadata.DeviceName @firmware.Metadata.FirmwareVersion</strong>
-                                · for hardware @firmware.Metadata.HardwareVersion · <span class="detail">@fileName</span>
+                                @if (firmware.Metadata is { } metadata)
+                                {
+                                    <strong>@metadata.DeviceName @metadata.FirmwareVersion</strong>
+                                    <text> · for hardware @metadata.HardwareVersion</text>
+                                }
+                                else
+                                {
+                                    <strong>Unknown firmware</strong>
+                                    <text> · device not checked</text>
+                                }
+                                @if (firmware is PicoFirmwareFile pico)
+                                {
+                                    <text> · @pico.Targets</text>
+                                }
+                                · <span class="detail">@firmware.FileName</span>
                             </p>
                         }
                         else if (CurrentStep == 2)
                         {
                             <label class="dropzone">
-                                <InputFile accept=".hex" OnChange="OnFileSelectedAsync" />
+                                <InputFile accept="@(bootselMode ? ".uf2" : ".hex,.uf2")" OnChange="OnFileSelectedAsync" />
                                 @Icons.Upload
-                                <span><strong>Choose a .hex file</strong> or drop it here</span>
-                                <small>Harp release files are named like <code>Behavior-fw1.2-harp1.13-hw2.0-ass0.hex</code>; the name says which device and hardware they are for.</small>
+                                @if (bootselMode)
+                                {
+                                    <span><strong>Choose a .uf2 file</strong> or drop it here</span>
+                                }
+                                else
+                                {
+                                    <span><strong>Choose a .hex or .uf2 file</strong> or drop it here</span>
+                                }
+                                <small>ATxmega devices take <code>.hex</code> files and Pico devices <code>.uf2</code> files. Harp release files are named like <code>Behavior-fw1.2-harp1.13-hw2.0-ass0.hex</code>; the name says which device and hardware they are for.</small>
                             </label>
                             @if (fileError is not null)
                             {
                                 <div class="status-line status-error" role="alert">@Icons.Error <span>@fileError</span></div>
+                            }
+                            @if (unnamedFile is not null)
+                            {
+                                <p class="hint">
+                                    The file is a valid image. You can still install it, but the page cannot check that it is for this device.
+                                    <button class="link-button" @onclick="UseUnnamedFile">Install it anyway</button>
+                                </p>
                             }
                         }
                     </div>
@@ -134,7 +176,7 @@
                                 <span class="arrow" aria-hidden="true">→</span>
                                 <div>
                                     <span class="label">New</span>
-                                    <strong>@firmware.Metadata.FirmwareVersion</strong>
+                                    <strong>@(firmware.Metadata?.FirmwareVersion?.ToString() ?? "unknown")</strong>
                                 </div>
                             </div>
 
@@ -144,19 +186,38 @@
                                     <div class="status-line status-ok">@Icons.Check <span>Made for this device and hardware version.</span></div>
                                     break;
                                 case Fit.Unsupported:
-                                    <div class="status-line status-error">@Icons.Error <span>This file is for @firmware.Metadata.DeviceName with hardware @firmware.Metadata.HardwareVersion, but the device is @Session.Identity?.DisplayName with hardware @Session.Identity?.HardwareVersion. Installing it can leave the device unusable until the right firmware is installed.</span></div>
+                                    <div class="status-line status-error">@Icons.Error <span>This file is for @firmware.Metadata?.DeviceName with hardware @firmware.Metadata?.HardwareVersion, but the device is @Session.Identity?.DisplayName with hardware @Session.Identity?.HardwareVersion. Installing it can leave the device unusable until the right firmware is installed.</span></div>
                                     <label class="field check">
                                         <input type="checkbox" @bind="overrideCheck" />
                                         <span>Install it anyway</span>
                                     </label>
                                     break;
+                                case Fit.UnknownFile:
+                                    <div class="status-line status-warn">@Icons.Warning <span>The file name does not say which device and hardware it is for, so the device was not checked. Make sure this file is for @(Session.Identity?.DisplayName ?? "this device")@(firmware is PicoFirmwareFile ? ". The update still checks that the image is for the microcontroller of the device." : ".")</span></div>
+                                    break;
                                 default:
-                                    <div class="status-line status-warn">@Icons.Warning <span>The device was not checked. Make sure this file is for @firmware.Metadata.DeviceName hardware @firmware.Metadata.HardwareVersion.</span></div>
+                                    <div class="status-line status-warn">@Icons.Warning <span>The device was not checked. Make sure this file is for @firmware.Metadata?.DeviceName hardware @firmware.Metadata?.HardwareVersion.</span></div>
                                     break;
                             }
                             @if (VersionNote is { } note)
                             {
                                 <p class="hint">@note</p>
+                            }
+                            @if (firmware.Metadata?.DeviceName == Harp.Toolkit.Firmware.SoundCard.Coprocessor.DeviceName)
+                            {
+                                <div class="status-line status-warn">@Icons.Warning <span>This page updates only the main processor of the SoundCard. Install the coprocessor image of the same release with <code>harp.toolkit update</code>, which updates both processors together.</span></div>
+                            }
+                            @if (firmware is PicoFirmwareFile picoFirmware)
+                            {
+                                <p class="hint">
+                                    The device restarts in BOOTSEL mode, where it shows up as a USB drive for a moment.
+                                    The first time, the browser asks you to pick it: choose <strong>RP2 Boot</strong> (RP2040) or <strong>RP2350 Boot</strong>.
+                                </p>
+                                @if (picoFirmware.TargetsRP2040 && UsbDevices.IsWindows)
+                                {
+                                    <div class="status-line status-warn">@Icons.Warning <span>On Windows, the RP2040 boot interface needs the WinUSB driver, installed once per computer. Without it the update stops with the device in BOOTSEL mode and its previous firmware still installed.</span></div>
+                                    <BootselSetupHelp />
+                                }
                             }
 
                             <label class="field check confirm">
@@ -186,7 +247,20 @@
                                     <li class="@StageClass(stage)">@label</li>
                                 }
                             </ul>
-                            @if (updating)
+                            @if (bootselPrompt is not null)
+                            {
+                                <div class="status-line status-warn" role="alert">
+                                    @Icons.Plug
+                                    <span>
+                                        Select the device in BOOTSEL mode so the page can write to it. It is listed as <strong>RP2 Boot</strong> (RP2040) or <strong>RP2350 Boot</strong>.
+                                    </span>
+                                </div>
+                                <div class="row">
+                                    <button class="btn btn-primary" @onclick="SelectBootselDeviceAsync">@Icons.Plug Select the device</button>
+                                    <button class="btn" @onclick="() => bootselPrompt?.TrySetResult(null)">It is not listed</button>
+                                </div>
+                            }
+                            else if (updating)
                             {
                                 <p class="hint">Keep the device plugged in and this page open.</p>
                             }
@@ -195,6 +269,10 @@
                                 <div class="status-line @(resultError ? "status-error" : "status-ok")" role="status">
                                     @(resultError ? Icons.Error : Icons.Check) <span>@result</span>
                                 </div>
+                                @if (showSetupHelp)
+                                {
+                                    <BootselSetupHelp Open="true" />
+                                }
                                 <div class="row">
                                     @if (resultError)
                                     {
@@ -214,9 +292,9 @@
 @code {
     const long MaxFileSize = 4 * 1024 * 1024;
 
-    enum Fit { Supported, Unsupported, Unchecked }
+    enum Fit { Supported, Unsupported, Unchecked, UnknownFile }
 
-    static readonly (UpdateStage Stage, string Label)[] Stages =
+    static readonly (UpdateStage Stage, string Label)[] AtxmegaStages =
     [
         (UpdateStage.Connect, "Connect to the device"),
         (UpdateStage.Check, "Check the firmware supports it"),
@@ -226,10 +304,25 @@
         (UpdateStage.Restart, "Start the new firmware")
     ];
 
-    DeviceFirmware? firmware;
-    string? fileName;
+    static readonly (UpdateStage Stage, string Label)[] PicoStages =
+    [
+        (UpdateStage.Connect, "Connect to the device"),
+        (UpdateStage.Check, "Check the firmware supports it"),
+        (UpdateStage.Reset, "Restart it in BOOTSEL mode"),
+        (UpdateStage.Bootloader, "Connect to the boot ROM"),
+        (UpdateStage.Write, "Write and verify the firmware"),
+        (UpdateStage.Restart, "Start the new firmware")
+    ];
+
+    (UpdateStage Stage, string Label)[] Stages => firmware?.Core == FirmwareCore.Pico ? PicoStages : AtxmegaStages;
+
+    FirmwareFile? firmware;
     string? fileError;
+    (string Name, byte[] Contents)? unnamedFile;
     bool recovery;
+    bool bootselMode;
+    bool showSetupHelp;
+    TaskCompletionSource<WebUsbDevice?>? bootselPrompt;
     string? updatedDevice;
     bool confirmed;
     bool overrideCheck;
@@ -238,7 +331,7 @@
     string? result;
     bool resultError;
 
-    bool DeviceReady => Session.IsConnected || (recovery && Session.Port is not null);
+    bool DeviceReady => Session.IsConnected || (recovery && Session.Port is not null) || bootselMode;
 
     int CurrentStep =>
         updating || result is not null ? 4 :
@@ -247,7 +340,8 @@
 
     Fit Compatibility =>
         firmware is null || !Session.IsConnected || Session.Identity is null ? Fit.Unchecked :
-        firmware.Metadata.Supports(Session.Identity.DeviceName ?? "", Session.Identity.HardwareVersion) ? Fit.Supported : Fit.Unsupported;
+        firmware.Metadata is not { } metadata ? Fit.UnknownFile :
+        metadata.Supports(Session.Identity.DeviceName ?? "", Session.Identity.HardwareVersion) ? Fit.Supported : Fit.Unsupported;
 
     bool CanStart => firmware is not null && confirmed && (Compatibility != Fit.Unsupported || overrideCheck);
 
@@ -257,7 +351,7 @@
         {
             if (firmware is null || Session.Identity?.FirmwareVersion is not { } installed || Compatibility != Fit.Supported)
                 return null;
-            var comparison = firmware.Metadata.FirmwareVersion.CompareTo(installed);
+            var comparison = firmware.Metadata!.FirmwareVersion.CompareTo(installed);
             return comparison == 0 ? "This version is already installed; updating reinstalls it."
                 : comparison < 0 ? "This is an older version than the one installed."
                 : null;
@@ -290,14 +384,22 @@
     async Task ChangeDeviceAsync()
     {
         recovery = false;
+        bootselMode = false;
         confirmed = false;
         await Session.DisconnectAsync();
+    }
+
+    void EnterBootselMode()
+    {
+        bootselMode = true;
+        recovery = false;
+        if (firmware is not null and not PicoFirmwareFile)
+            ClearFile();
     }
 
     void ClearFile()
     {
         firmware = null;
-        fileName = null;
         confirmed = false;
         overrideCheck = false;
     }
@@ -306,6 +408,8 @@
     {
         ClearFile();
         fileError = null;
+        unnamedFile = null;
+        byte[] contents;
         try
         {
             using var buffer = new MemoryStream();
@@ -313,14 +417,57 @@
             {
                 await stream.CopyToAsync(buffer);
             }
-            buffer.Position = 0;
-            firmware = AtxmegaBootloader.ReadFirmware(e.File.Name, buffer);
-            fileName = e.File.Name;
+            contents = buffer.ToArray();
         }
-        catch (Exception ex) when (ex is ArgumentException or FormatException or NotSupportedException or IOException)
+        catch (IOException ex)
         {
-            fileError = $"{e.File.Name} is not a Harp firmware file. {ex.Message}";
+            fileError = $"{e.File.Name} could not be read. {ex.Message}";
+            return;
         }
+
+        ReadFile(e.File.Name, contents, allowUnknownName: false);
+    }
+
+    // Installs a valid image whose name does not follow the Harp convention, at the user's request.
+    void UseUnnamedFile()
+    {
+        if (unnamedFile is not { } file)
+            return;
+        unnamedFile = null;
+        ReadFile(file.Name, file.Contents, allowUnknownName: true);
+    }
+
+    void ReadFile(string name, byte[] contents, bool allowUnknownName)
+    {
+        fileError = null;
+        FirmwareFile file;
+        try
+        {
+            file = FirmwareFile.Read(name, new MemoryStream(contents), allowUnknownName);
+        }
+        catch (FirmwareNameException ex)
+        {
+            fileError = $"{name}: {ex.Message}";
+            unnamedFile = (name, contents);
+            return;
+        }
+        catch (Exception ex) when (ex is ArgumentException or FormatException or NotSupportedException)
+        {
+            fileError = $"{name} is not a Harp firmware file. {ex.Message}";
+            return;
+        }
+
+        if (file is PicoFirmwareFile && !Session.IsUsbSupported)
+        {
+            fileError = $"{name} is for a Pico device, which this browser cannot update: it has no WebUSB. Use Chrome or Edge on a desktop computer.";
+            return;
+        }
+        if (bootselMode && file is not PicoFirmwareFile)
+        {
+            fileError = $"{name} is for an ATxmega device. A device in BOOTSEL mode takes a .uf2 file.";
+            return;
+        }
+        firmware = file;
     }
 
     async Task UpdateAsync()
@@ -331,10 +478,12 @@
         // The update takes over the connection, so remember which device it is for.
         updatedDevice = Session.Identity is { } device && Session.IsConnected
             ? $"{device.DisplayName} · firmware {device.FirmwareVersion} · hardware {device.HardwareVersion}"
+            : bootselMode ? "Device in BOOTSEL mode"
             : $"{Session.PortLabel} · in its bootloader";
         updating = true;
         result = null;
         resultError = false;
+        showSetupHelp = false;
         progress = new UpdateProgress(UpdateStage.Connect, 0);
         var reporter = new Progress<UpdateProgress>(value =>
         {
@@ -346,22 +495,95 @@
         var force = overrideCheck || !Session.IsConnected;
         try
         {
-            await Session.RunExclusiveAsync(
-                port => AtxmegaBootloader.UpdateFirmwareAsync(port, firmware, force, reporter),
-                reconnectDelay: TimeSpan.FromSeconds(1));
+            switch (firmware)
+            {
+                case AtxmegaFirmwareFile atxmega:
+                    await Session.RunExclusiveAsync(
+                        port => AtxmegaBootloader.UpdateFirmwareAsync(port, atxmega, force, reporter),
+                        reconnectDelay: TimeSpan.FromSeconds(1));
+                    break;
+                case PicoFirmwareFile pico when bootselMode:
+                    await PicoBootRom.UpdateFirmwareAsync(null, pico, forceUpdate: true, CreateConnector(), reporter);
+                    break;
+                case PicoFirmwareFile pico:
+                    await Session.RunExclusiveAsync(
+                        port => PicoBootRom.UpdateFirmwareAsync(port, pico, force, CreateConnector(), reporter),
+                        reconnectDelay: TimeSpan.FromSeconds(2),
+                        portMayMove: true);
+                    break;
+            }
+
             result = Session.IsConnected && Session.Identity is { } identity
                 ? $"Updated. {identity.DisplayName} now reports firmware {identity.FirmwareVersion}."
+                : bootselMode
+                ? "Updated. The device restarts with the new firmware: select its serial port to connect to it."
+                : firmware.Core == FirmwareCore.Pico
+                ? "Updated, but the device did not reconnect. Its serial port can come back as a new port: select it to check the version."
                 : "Updated, but the device did not reconnect. Unplug it, plug it back in and connect to check the version.";
             recovery = false;
+            bootselMode = false;
         }
-        catch (Exception ex) when (ex is HarpException or TimeoutException or IOException or InvalidOperationException)
+        catch (Exception ex) when (ex is HarpException or TimeoutException or IOException or InvalidOperationException or NotSupportedException or ArgumentException)
         {
             resultError = true;
-            result = $"The update failed: {ex.Message} If the device stopped answering, it is waiting in its bootloader: try again, and choose \"Update it anyway\" if it cannot connect.";
+            result = $"The update failed: {ex.Message} {DescribeRecovery(ex)}";
+            showSetupHelp = firmware.Core == FirmwareCore.Pico && BootselSetupHelp.IsNeeded &&
+                (ex is BootselAccessException || (ex is BootselNotFoundException && UsbDevices.IsWindows));
         }
         finally
         {
             updating = false;
+            bootselPrompt = null;
+        }
+    }
+
+    string DescribeRecovery(Exception ex) => firmware?.Core switch
+    {
+        FirmwareCore.Pico => ex switch
+        {
+            UnsupportedImageException or BootselRequestIgnoredException or AmbiguousBootselDeviceException => "",
+            BootselAccessException => "The device is waiting in BOOTSEL mode with its previous firmware. Give the browser access to it as described below, then choose \"Update a device in BOOTSEL mode\".",
+            BootselNotFoundException => "If the device did not appear in the list, it may still be in BOOTSEL mode with its previous firmware, showing up as a USB drive. " +
+                (UsbDevices.IsWindows ? "On Windows, an RP2040 appears only once the WinUSB driver is installed, as described below. " : "") +
+                "Then choose \"Update a device in BOOTSEL mode\".",
+            _ => "If the device stopped answering, it is waiting in BOOTSEL mode, showing up as a USB drive: choose \"Update a device in BOOTSEL mode\"."
+        },
+        _ => "If the device stopped answering, it is waiting in its bootloader: try again, and choose \"Update it anyway\" if it cannot connect."
+    };
+
+    WebUsbBootselConnector CreateConnector() => new(RequestBootselDeviceAsync);
+
+    // Called by the connector when no device the page may open without asking appeared in BOOTSEL
+    // mode. The browser shows its device chooser only in response to a click, so ask the user.
+    async Task<WebUsbDevice?> RequestBootselDeviceAsync()
+    {
+        var prompt = new TaskCompletionSource<WebUsbDevice?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        bootselPrompt = prompt;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            return await prompt.Task;
+        }
+        finally
+        {
+            bootselPrompt = null;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    async Task SelectBootselDeviceAsync()
+    {
+        if (bootselPrompt is not { } prompt)
+            return;
+        try
+        {
+            var device = await UsbDevices.RequestDeviceAsync(WebUsbBootselConnector.Filters);
+            if (device is not null)
+                prompt.TrySetResult(device);
+        }
+        catch (Exception ex)
+        {
+            prompt.TrySetException(new IOException($"The device could not be selected. {ex.Message}", ex));
         }
     }
 
@@ -370,8 +592,15 @@
         result = null;
         progress = null;
         confirmed = false;
+        showSetupHelp = false;
         if (!Session.IsConnected)
-            recovery = true;
+        {
+            // A Pico device that failed after its reset waits in BOOTSEL mode, with no serial port.
+            if (firmware is PicoFirmwareFile && Session.IsUsbSupported)
+                bootselMode = true;
+            else
+                recovery = true;
+        }
     }
 
     void StartOver()
@@ -379,6 +608,8 @@
         result = null;
         progress = null;
         recovery = false;
+        bootselMode = false;
+        showSetupHelp = false;
         ClearFile();
     }
 

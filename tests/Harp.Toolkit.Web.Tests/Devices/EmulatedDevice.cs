@@ -46,6 +46,27 @@ sealed class EmulatedDevice : IDevicePort
 
     public bool SilentProtocol { get; init; }
 
+    /// <summary>
+    /// Gets a value indicating whether the device replies to reset requests but keeps running,
+    /// like Pico firmware that does not implement <c>UPDATE_FIRMWARE</c>.
+    /// </summary>
+    public bool IgnoreReset { get; init; }
+
+    /// <summary>
+    /// Sets the contents of the unique ID register, which Pico devices implement.
+    /// </summary>
+    public byte[] Uid
+    {
+        init => SetRegister(HarpCommand.WriteByte(UidAddress, value));
+    }
+
+    /// <summary>
+    /// Gets the value last written to the reset register.
+    /// </summary>
+    public byte? ResetWrite { get; private set; }
+
+    const int UidAddress = 16;
+
     public List<PortMode> Opens { get; } = [];
 
     public byte[] Flash { get; } = new byte[64 * 1024];
@@ -90,7 +111,10 @@ sealed class EmulatedDevice : IDevicePort
         if (command.MessageType == MessageType.Write)
         {
             if (command.Address == ResetDevice.Address)
-                InBootloader = true;
+            {
+                ResetWrite = command.GetPayloadByte();
+                InBootloader = !IgnoreReset;
+            }
             else
                 registers[command.Address] = command;
         }

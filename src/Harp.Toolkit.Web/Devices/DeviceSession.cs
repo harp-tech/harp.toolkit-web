@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Runtime.Versioning;
 using Bonsai.Harp;
 using Harp.Toolkit.Web.Generation;
 using Harp.WebSerial;
+using Harp.WebUsb;
 
 namespace Harp.Toolkit.Web.Devices;
 
@@ -57,6 +59,11 @@ public sealed class DeviceSession(HttpClient http)
     /// Gets a value indicating whether the browser supports Web Serial.
     /// </summary>
     public bool IsSupported { get; private set; }
+
+    /// <summary>
+    /// Gets a value indicating whether the browser supports WebUSB, which updates Pico devices.
+    /// </summary>
+    public bool IsUsbSupported { get; private set; }
 
     /// <summary>
     /// Gets the state of the session.
@@ -123,8 +130,9 @@ public sealed class DeviceSession(HttpClient http)
     /// <returns>The task object representing the asynchronous operation.</returns>
     public async Task InitializeAsync()
     {
-        await SerialPorts.InitializeAsync();
+        await Task.WhenAll(SerialPorts.InitializeAsync(), UsbDevices.InitializeAsync());
         IsSupported = SerialPorts.IsSupported;
+        IsUsbSupported = UsbDevices.IsSupported;
         if (!IsSupported)
             return;
 
@@ -277,10 +285,15 @@ public sealed class DeviceSession(HttpClient http)
     /// </summary>
     /// <param name="operation">The operation, which receives the closed port.</param>
     /// <param name="reconnectDelay">The time to wait for the device to restart before reconnecting.</param>
+    /// <param name="portMayMove">
+    /// <see langword="true"/> if the device leaves and reappears on USB, as a Pico device does when it
+    /// restarts in BOOTSEL mode, so its serial port can come back as a different port.
+    /// </param>
     /// <returns>The task object representing the asynchronous operation.</returns>
-    public async Task RunExclusiveAsync(Func<IDevicePort, Task> operation, TimeSpan reconnectDelay)
+    public async Task RunExclusiveAsync(Func<IDevicePort, Task> operation, TimeSpan reconnectDelay, bool portMayMove = false)
     {
         var current = port ?? throw new InvalidOperationException("Select a port first.");
+        var previous = Identity;
         await DisconnectAsync();
         SetState(SessionState.Busy, error: null);
         try
@@ -289,12 +302,66 @@ public sealed class DeviceSession(HttpClient http)
         }
         finally
         {
-            await current.CloseAsync();
+            // The device may have left USB during the operation, which can fail the close.
+            try { await current.CloseAsync(); } catch (IOException) { }
             SetState(SessionState.Disconnected, Error);
         }
 
         await Task.Delay(reconnectDelay);
-        await ConnectAsync();
+        if (portMayMove && previous is not null)
+            await FindDeviceAsync(previous.WhoAmI, previous.SerialNumber, MovedPortTimeout);
+        else
+            await ConnectAsync();
+    }
+
+    static readonly TimeSpan MovedPortTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Asynchronously connects to a device that may have come back on a different serial port,
+    /// trying the selected port first and then the other ports the user granted earlier.
+    /// </summary>
+    /// <param name="whoAmI">The identity class of the device.</param>
+    /// <param name="serialNumber">The serial number of the device, if known.</param>
+    /// <param name="timeout">The time to keep looking for the device.</param>
+    /// <returns>
+    /// The task object representing the asynchronous operation. The <see cref="Task{TResult}.Result"/>
+    /// property is <see langword="true"/> if the device connected.
+    /// </returns>
+    /// <remarks>
+    /// A device that reappears on USB keeps its permission only if the browser can recognize it,
+    /// so the user may have to select its port again.
+    /// </remarks>
+    public async Task<bool> FindDeviceAsync(int whoAmI, ushort? serialNumber, TimeSpan timeout)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (true)
+        {
+            if (port is not null)
+            {
+                await ConnectAsync();
+                if (IsConnected)
+                    return true;
+            }
+
+            foreach (var candidate in await SerialPorts.GetPortsAsync())
+            {
+                if (port is not null && candidate.IsSameAs(port.Port))
+                    continue;
+                var identity = await ProbeAsync(candidate);
+                if (identity is not null && identity.WhoAmI == whoAmI &&
+                    (serialNumber is null || identity.SerialNumber == serialNumber))
+                {
+                    SetPort(candidate);
+                    await ConnectAsync();
+                    if (IsConnected)
+                        return true;
+                }
+            }
+
+            if (stopwatch.Elapsed > timeout)
+                return false;
+            await Task.Delay(TimeSpan.FromSeconds(1));
+        }
     }
 
     /// <summary>

@@ -12,19 +12,20 @@
 
   <!-- Bump this to pick up new generator releases: https://www.nuget.org/packages/Harp.Generators -->
   <PropertyGroup>
-    <HarpGeneratorsVersion>0.9.0</HarpGeneratorsVersion>
+    <HarpGeneratorsVersion>0.9.1</HarpGeneratorsVersion>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Harp.Generators" Version="$(HarpGeneratorsVersion)" />
-    <!-- Firmware image parsing. Its serial port code is not used, since it cannot run in the browser. -->
-    <PackageReference Include="Harp.Toolkit.Core" Version="0.4.0" />
+    <!-- Firmware image parsing. Its serial port and libusb code is not used, since it cannot run in the browser. -->
+    <PackageReference Include="Harp.Toolkit.Core" Version="0.6.0" />
     <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.12" />
     <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.12" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Harp.WebSerial\Harp.WebSerial.csproj" />
+    <ProjectReference Include="..\Harp.WebUsb\Harp.WebUsb.csproj" />
   </ItemGroup>
 
   <ItemGroup>
