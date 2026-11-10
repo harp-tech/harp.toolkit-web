@@ -2031,6 +2031,50 @@ label.btn {
   font-size: 20px;
 }
 
+/* Instructions for giving the browser access to a Pico boot interface */
+.setup-help {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 14px;
+}
+
+.setup-help summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--brand-text);
+}
+
+.setup-help p,
+.setup-help ol {
+  margin: 10px 0 0;
+}
+
+.setup-help ol {
+  padding-left: 22px;
+}
+
+.setup-help li + li {
+  margin-top: 4px;
+}
+
+.setup-help pre {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border-radius: 6px;
+  background: var(--surface-2);
+  font: 12px var(--mono);
+  white-space: pre;
+}
+
+.setup-help code {
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .field.check.confirm {
   align-items: flex-start;
 }

@@ -1,0 +1,53 @@
+@* How to give the browser access to the boot interface of a Pico device in BOOTSEL mode. *@
+@using System.Runtime.Versioning
+@using Harp.WebUsb
+@attribute [SupportedOSPlatform("browser")]
+
+@if (UsbDevices.IsWindows)
+{
+    <details class="setup-help" open="@Open">
+        <summary>Install the WinUSB driver for the RP2040 boot interface</summary>
+        <p>
+            Windows lets the browser use the boot interface of an RP2040 only through the WinUSB driver.
+            Without it, the device does not appear when the page asks for it, or cannot be opened.
+            The driver is installed once per computer:
+        </p>
+        <ol>
+            <li>Put the device in BOOTSEL mode: start an update on this page, or hold its BOOTSEL button while plugging it in.</li>
+            <li>Download and run <a href="https://zadig.akeo.ie/" target="_blank" rel="noopener">Zadig</a>.</li>
+            <li>Choose <strong>Options › List All Devices</strong>, and select <strong>RP2 Boot (Interface 1)</strong>.</li>
+            <li>Choose <strong>WinUSB</strong> as the driver, and click <strong>Install Driver</strong> or <strong>Replace Driver</strong>.</li>
+            <li>Back on this page, choose <strong>Update a device in BOOTSEL mode</strong> in the first step.</li>
+        </ol>
+        <p class="hint">
+            The RP2350 needs no driver. The command-line tool needs the same driver, see
+            <a href="@PlatformSetupUrl" target="_blank" rel="noopener">platform setup</a>.
+        </p>
+    </details>
+}
+else if (UsbDevices.IsLinux)
+{
+    <details class="setup-help" open="@Open">
+        <summary>Allow access to the boot interface with a udev rule</summary>
+        <p>Linux lets the browser open the boot interface of a device in BOOTSEL mode only with a udev rule. Create <code>/etc/udev/rules.d/99-picoboot.rules</code> with:</p>
+        <pre>SUBSYSTEM=="usb", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="0003", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="000f", TAG+="uaccess"</pre>
+        <p>Then reload the rules with <code>sudo udevadm control --reload-rules &amp;&amp; sudo udevadm trigger</code>, unplug the device and plug it back in.</p>
+        <p class="hint">See also the Harp.Toolkit <a href="@PlatformSetupUrl" target="_blank" rel="noopener">platform setup</a>.</p>
+    </details>
+}
+
+@code {
+    const string PlatformSetupUrl = "https://harp-tech.org/toolkit/articles/update.html#platform-setup";
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the instructions start expanded.
+    /// </summary>
+    [Parameter]
+    public bool Open { get; set; }
+
+    /// <summary>
+    /// Gets a value indicating whether the current platform needs any setup.
+    /// </summary>
+    public static bool IsNeeded => UsbDevices.IsWindows || UsbDevices.IsLinux;
+}

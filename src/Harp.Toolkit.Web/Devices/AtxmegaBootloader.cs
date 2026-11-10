@@ -1,8 +1,5 @@
 using Bonsai.Harp;
 using Harp.Toolkit.Firmware;
-using Harp.Toolkit.Firmware.ATxmega;
-using DeviceFirmware = Harp.Toolkit.Firmware.ATxmega.DeviceFirmware;
-using FirmwareMetadata = Harp.Toolkit.Firmware.ATxmega.FirmwareMetadata;
 
 namespace Harp.Toolkit.Web.Devices;
 
@@ -38,22 +35,6 @@ public static class AtxmegaBootloader
     const int InvalidDataLength = 3;
 
     /// <summary>
-    /// Creates a firmware image from a file in Intel HEX format, reading the firmware metadata
-    /// from the file name.
-    /// </summary>
-    /// <param name="fileName">
-    /// The name of the file, such as <c>Behavior-fw1.2-harp1.13-hw2.0-ass0.hex</c>.
-    /// </param>
-    /// <param name="stream">The contents of the file.</param>
-    /// <returns>The firmware image.</returns>
-    /// <exception cref="ArgumentException">The file name or contents are not a valid firmware image.</exception>
-    public static DeviceFirmware ReadFirmware(string fileName, Stream stream)
-    {
-        var metadata = FirmwareMetadata.Parse(Path.GetFileNameWithoutExtension(fileName));
-        return DeviceFirmware.FromStream(metadata, stream, ImagePageSize);
-    }
-
-    /// <summary>
     /// Asynchronously updates the firmware of the device on the specified port.
     /// </summary>
     /// <param name="port">The port of the device. The port must be closed.</param>
@@ -70,7 +51,7 @@ public static class AtxmegaBootloader
     /// <returns>The task object representing the asynchronous operation.</returns>
     public static async Task UpdateFirmwareAsync(
         IDevicePort port,
-        DeviceFirmware firmware,
+        AtxmegaFirmwareFile firmware,
         bool forceUpdate,
         IProgress<UpdateProgress>? progress = default,
         CancellationToken cancellationToken = default)
@@ -83,14 +64,15 @@ public static class AtxmegaBootloader
             await using (var device = new HarpConnection(stream))
             {
                 progress?.Report(new(UpdateStage.Check, 10));
-                if (!forceUpdate)
+                // A file without metadata does not say which device it is for, so there is nothing to check.
+                if (!forceUpdate && firmware.Metadata is { } metadata)
                 {
                     var identity = await device.ReadIdentityAsync(cancellationToken);
-                    if (!firmware.Metadata.Supports(identity.DeviceName ?? string.Empty, identity.HardwareVersion))
+                    if (!metadata.Supports(identity.DeviceName ?? string.Empty, identity.HardwareVersion))
                     {
                         throw new HarpException(
-                            $"The firmware file is for {firmware.Metadata.DeviceName} with hardware version " +
-                            $"{firmware.Metadata.HardwareVersion}, but the device on this port is {identity.DisplayName} " +
+                            $"The firmware file is for {metadata.DeviceName} with hardware version " +
+                            $"{metadata.HardwareVersion}, but the device on this port is {identity.DisplayName} " +
                             $"with hardware version {identity.HardwareVersion}.");
                     }
                 }
@@ -136,20 +118,20 @@ public static class AtxmegaBootloader
                     var bytesWritten = 0;
                     var reportSize = pageSize * 8;
                     var dataMessage = new byte[pageSize + HeaderSize];
-                    while (bytesWritten < firmware.Data.Length)
+                    while (bytesWritten < firmware.Image.Data.Length)
                     {
-                        CreateBootloaderMessage(dataMessage, WritePage, bytesWritten, firmware.Data, bytesWritten, pageSize);
+                        CreateBootloaderMessage(dataMessage, WritePage, bytesWritten, firmware.Image.Data, bytesWritten, pageSize);
                         await BootloaderCommandAsync(bootloader, dataMessage);
                         bytesWritten += pageSize;
                         if (bytesWritten % reportSize == 0)
                         {
-                            var percent = 40 + bytesWritten * 50 / firmware.Data.Length;
+                            var percent = 40 + bytesWritten * 50 / firmware.Image.Data.Length;
                             progress?.Report(new(UpdateStage.Write, percent));
                         }
                     }
 
                     progress?.Report(new(UpdateStage.Restart, 90));
-                    CreateBootloaderMessage(dataMessage, ExitBootloader, 0, firmware.Data, 0, pageSize);
+                    CreateBootloaderMessage(dataMessage, ExitBootloader, 0, firmware.Image.Data, 0, pageSize);
                     await BootloaderCommandAsync(bootloader, dataMessage);
                     progress?.Report(new(UpdateStage.Restart, 100));
                     break;
